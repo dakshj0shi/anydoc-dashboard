@@ -48,6 +48,12 @@ Verify, then open `http://192.168.0.82:3017`:
 ss -ltnp | grep 3017
 ```
 
+**Expect one console warning, and ignore it.** `pm2 serve` sends the wasm as `text/plain`,
+not `application/wasm`, so `WebAssembly.instantiateStreaming` refuses it and the loader
+falls back to `WebAssembly.instantiate`. Confirmed on this deploy. The page works normally;
+the only cost is that the 22 ms compile happens after the download instead of overlapping
+it. Not a bug, and not fixable without nginx.
+
 ### Updating a live deploy
 
 There is no build step, so a deploy is a pull. PM2 serves from disk, so it picks up the new
