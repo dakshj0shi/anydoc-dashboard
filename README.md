@@ -35,7 +35,7 @@ Internal LAN, plain HTTP, port **3017**. The same box runs `holistic-dashboard` 
 Deployed by git pull, same as the other apps on the box. First time:
 
 ```bash
-git clone git@github.com:USER/anydoc-dashboard.git ~/anydoc-dashboard
+git clone https://github.com/dakshj0shi/anydoc-dashboard.git ~/anydoc-dashboard
 ```
 
 ```bash
