@@ -1,0 +1,5 @@
+node_modules/
+
+# Regenerable, nginx-only, 4.7 MB of binary. See README.
+vendor/*.br
+vendor/*.gz

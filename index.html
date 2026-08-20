@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Document to Markdown</title>
+<style>
+  :root {
+    --bg: #f6f6f5; --panel: #fff; --ink: #1a1a19; --muted: #6b6b66;
+    --line: #e0e0dc; --accent: #b23c17; --ok: #2f7d4f; --bad: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#1a1a19; --panel:#232322; --ink:#ececea; --muted:#9a9a94;
+            --line:#35352f; --accent:#e0642f; --ok:#5fbe86; --bad:#e8776d; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 40px 20px 80px; }
+  h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 28px; font-size: 14px; }
+  #drop { border: 2px dashed var(--line); border-radius: 10px; background: var(--panel);
+          padding: 44px 20px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
+  #drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
+  #drop strong { display:block; font-size:16px; margin-bottom:6px; }
+  #drop span { color: var(--muted); font-size: 13px; }
+  #status { margin: 16px 0 0; color: var(--muted); font-size: 13px; min-height: 20px; }
+  .bar { display:flex; gap:8px; align-items:center; margin:24px 0 12px; }
+  .bar h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0; flex:1; font-weight:600; }
+  button { font: inherit; border:1px solid var(--line); background:var(--panel); color:var(--ink);
+           padding:5px 11px; border-radius:6px; cursor:pointer; font-size:13px; }
+  button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity:.4; cursor:default; }
+  .file { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+          padding:12px 14px; margin-bottom:8px; display:flex; gap:12px; align-items:center; }
+  .file .meta { flex:1; min-width:0; }
+  .file .name { font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .file .note { font-size:12.5px; color:var(--muted); margin-top:2px; }
+  .file.err .note { color: var(--bad); }
+  .file .note.done { color: var(--ok); }
+  .acts { display:flex; gap:6px; flex-shrink:0; }
+  pre { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px;
+        overflow:auto; max-height:460px; font:12.5px/1.55 ui-monospace,Consolas,monospace; white-space:pre-wrap; word-break:break-word; }
+  footer { margin-top:36px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:12.5px; }
+  .hide { display:none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Document to Markdown</h1>
+  <p class="sub">Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV and text PDFs. Files are converted inside your browser and never leave your computer.</p>
+
+  <div id="drop" tabindex="0" role="button" aria-label="Choose files to convert">
+    <strong>Drop files here</strong>
+    <span>or click to choose &mdash; several at once is fine</span>
+  </div>
+  <input id="picker" type="file" multiple class="hide"
+         accept=".doc,.docx,.docm,.ppt,.pps,.pot,.pptx,.pptm,.ppsx,.ppsm,.xls,.xlsx,.xlsm,.xlsb,.odt,.ods,.odp,.rtf,.epub,.csv,.pdf">
+  <p id="status" role="status" aria-live="polite">Loading converter&hellip;</p>
+
+  <div id="listbar" class="bar hide">
+    <h2>Files</h2>
+    <button id="copyall">Copy all as Markdown</button>
+    <button id="clear">Clear</button>
+  </div>
+  <div id="list"></div>
+
+  <div id="previewbar" class="bar hide"><h2 id="previewname">Preview</h2></div>
+  <pre id="preview" class="hide"></pre>
+
+  <footer>
+    Converted locally with <a href="https://github.com/firecrawl/anydoc">anydoc</a> (MIT), compiled to WebAssembly.
+    Scanned or image-only PDFs need OCR and will fail here &mdash; they contain no text to extract.
+  </footer>
+</div>
+
+<script type="module">
+const $ = id => document.getElementById(id);
+const drop = $('drop'), picker = $('picker'), status = $('status'), list = $('list');
+const results = [];
+
+// The wasm build reports e.code lowercase ("unsupported"); the node build documents
+// PascalCase. Flatten to letters-only so one table covers both.
+const REASON = {
+  unsupported:   'Not a supported format, or a scanned PDF that needs OCR.',
+  encrypted:     'Password-protected. Remove the password and try again.',
+  malformed:     'Corrupt, or holds no text worth extracting.',
+  resourcelimit: 'Too large or deeply nested; hit a safety limit.',
+  missingpart:   'A part the file needs to make sense is missing.',
+};
+const reasonFor = code => REASON[String(code ?? '').toLowerCase().replace(/[^a-z]/g, '')];
+
+// The worker owns the wasm module. Conversions are request/response keyed by id, so a
+// slow file never blocks the page and the results still land in the order they finished.
+let ready = false;
+let seq = 0;
+const pending = new Map();
+const worker = new Worker('./worker.js', { type: 'module' });
+
+worker.onmessage = ({ data }) => {
+  if (data.ready !== undefined) {
+    ready = data.ready;
+    status.textContent = ready ? 'Ready.' : 'Converter failed to load: ' + data.message;
+    return;
+  }
+  const settle = pending.get(data.id);
+  if (settle) { pending.delete(data.id); settle(data); }
+};
+
+worker.onerror = e => {
+  status.textContent = 'Converter failed to start: ' + (e.message || 'worker error') +
+    ' — this page needs a browser with module worker support (Chrome/Edge 80+, Firefox 114+, Safari 15+).';
+};
+
+function ask(name, bytes) {
+  const id = ++seq;
+  // Transfer the buffer rather than copy it; matters once files get large.
+  return new Promise(resolve => {
+    pending.set(id, resolve);
+    worker.postMessage({ id, name, bytes }, [bytes.buffer]);
+  });
+}
+
+drop.onclick = () => picker.click();
+drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); picker.click(); } };
+picker.onchange = () => { handle([...picker.files]); picker.value = ''; };
+
+for (const ev of ['dragenter', 'dragover']) {
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); });
+}
+for (const ev of ['dragleave', 'drop']) {
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); });
+}
+drop.addEventListener('drop', e => handle([...e.dataTransfer.files]));
+
+async function handle(files) {
+  if (!ready) { status.textContent = 'Still loading the converter, one moment.'; return; }
+  if (!files.length) return;
+  status.textContent = 'Converting ' + files.length + ' file' + (files.length > 1 ? 's' : '') + '…';
+  for (const file of files) {
+    results.push(await convert(file));
+    render();
+  }
+  const bad = results.filter(r => r.error).length;
+  status.textContent = bad
+    ? 'Done, ' + bad + ' file' + (bad > 1 ? 's' : '') + ' could not be read.'
+    : 'Done.';
+}
+
+async function convert(file) {
+  try {
+    const r = await ask(file.name, new Uint8Array(await file.arrayBuffer()));
+    if (r.markdown === undefined) {
+      return { name: file.name, error: reasonFor(r.code) ?? (r.message || 'Conversion failed.') };
+    }
+    return { name: file.name, markdown: r.markdown, ms: r.ms };
+  } catch (e) {
+    return { name: file.name, error: e.message || 'Could not read the file.' };
+  }
+}
+
+function mdName(name) { return name.replace(/\.[^.]+$/, '') + '.md'; }
+
+function render() {
+  $('listbar').classList.remove('hide');
+  list.replaceChildren(...results.map((r, i) => {
+    const row = document.createElement('div');
+    row.className = 'file' + (r.error ? ' err' : '');
+
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    const name = document.createElement('div');
+    name.className = 'name';
+    name.textContent = r.name;
+    const note = document.createElement('div');
+    note.className = 'note' + (r.error ? '' : ' done');
+    note.textContent = r.error ?? (r.markdown.length.toLocaleString() + ' characters in ' + r.ms + ' ms');
+    meta.append(name, note);
+
+    const acts = document.createElement('div');
+    acts.className = 'acts';
+    if (!r.error) {
+      acts.append(
+        btn('View', () => show(i)),
+        btn('Copy', () => navigator.clipboard.writeText(r.markdown)),
+        btn('Download', () => save(mdName(r.name), r.markdown)),
+      );
+    }
+    row.append(meta, acts);
+    return row;
+  }));
+}
+
+function btn(label, onclick) {
+  const b = document.createElement('button');
+  b.textContent = label;
+  b.onclick = onclick;
+  return b;
+}
+
+function show(i) {
+  $('previewname').textContent = results[i].name;
+  $('preview').textContent = results[i].markdown;
+  $('previewbar').classList.remove('hide');
+  $('preview').classList.remove('hide');
+  $('preview').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function save(filename, text) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+$('copyall').onclick = () => {
+  const ok = results.filter(r => !r.error);
+  if (!ok.length) return;
+  const joined = ok.map(r => '# ' + r.name + '\n\n' + r.markdown).join('\n\n---\n\n');
+  navigator.clipboard.writeText(joined);
+  status.textContent = 'Copied ' + ok.length + ' document' + (ok.length > 1 ? 's' : '') + ' to the clipboard.';
+};
+
+$('clear').onclick = () => {
+  results.length = 0;
+  list.replaceChildren();
+  for (const id of ['listbar', 'previewbar', 'preview']) $(id).classList.add('hide');
+  status.textContent = 'Ready.';
+};
+</script>
+</body>
+</html>
