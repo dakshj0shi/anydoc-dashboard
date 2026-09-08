@@ -197,10 +197,13 @@ appear, widen the `accept` attribute on the file input in `index.html`.
 - **Docling is slow on this hardware, and big files are refused.** No GPU on that box, so
   budget 3 s per page for plain scans and 5-15 s for image-heavy ones. The sync endpoint
   gives up after `DOCLING_SERVE_MAX_SYNC_WAIT` and returns **504**, so `index.html` refuses
-  anything over **25 MB** client-side rather than tying up a shared production box for
-  fifteen minutes to fail anyway. Measured: a 94-page, 47 MB magazine cannot finish. This
-  tool is for scanned business documents of a few pages, not books. Lifting the ceiling
-  means the async `/v1/convert/file/async` API plus polling, which is not wired up.
+  anything over `MAX_UPLOAD_MB` (**10 MB**) client-side rather than tying up a shared
+  production box to fail anyway. Measured: a 94-page, 47 MB magazine cannot finish.
+  **`MAX_UPLOAD_MB` and `DOCLING_SERVE_MAX_SYNC_WAIT` are coupled** — 10 MB is ~15-25
+  scanned pages, whose worst case fits the 600 s the service is started with. Raise one and
+  you must raise the other, or you trade a fast refusal for a slow 504. This tool is for
+  scanned business documents of a few pages, not books; lifting the ceiling properly means
+  the async `/v1/convert/file/async` API plus polling, which is not wired up.
 - **Images become alt text.** Markdown output references image filenames; the raw bytes are
   not embedded. Fine for feeding an LLM, not a substitute for the original file.
 - **One file at a time.** The worker converts sequentially. A second worker would halve

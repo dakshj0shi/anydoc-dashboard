@@ -96,6 +96,7 @@ const reasonFor = code => REASON[String(code ?? '').toLowerCase().replace(/[^a-z
 // and returns Markdown just like anydoc does. Same host as this page, so one deploy
 // covers both — and only files the browser already rejected are uploaded.
 const DOCLING = location.protocol + '//' + location.hostname + ':5001/v1/convert/file';
+const MAX_UPLOAD_MB = 10;
 
 // The worker owns the wasm module. Conversions are request/response keyed by id, so a
 // slow file never blocks the page and the results still land in the order they finished.
@@ -170,13 +171,14 @@ async function convert(file, onProgress) {
   // A password stops Docling just as dead; anything else is worth the round trip.
   if (String(local.code ?? '').toLowerCase().includes('encrypt')) return { name: file.name, error: why };
 
-  // Docling needs 5-15 s per page on this CPU-only box, so anything big blows the server's
-  // 120 s sync limit however long we wait. Size is a crude proxy for page count, but it is
-  // the only one we have without parsing the PDF — and refusing here beats spending fifteen
-  // minutes of a shared box's CPU to fail anyway.
-  if (file.size > 25 * 1024 * 1024) {
+  // Size is the only cheap proxy we have for how long Docling will take, and on this
+  // CPU-only box that is 5-15 s per scanned page. 10 MB is roughly 15-25 pages, whose worst
+  // case still lands inside the server's DOCLING_SERVE_MAX_SYNC_WAIT (set to 600 s). Those
+  // two numbers are coupled: raising this without raising that env var only trades a fast,
+  // clear refusal for a slow 504.
+  if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
     return { name: file.name, error: why + ' Too big to convert on the server: ' +
-      Math.round(file.size / 1048576) + ' MB, limit 25 MB.' };
+      Math.round(file.size / 1048576) + ' MB, limit ' + MAX_UPLOAD_MB + ' MB.' };
   }
 
   onProgress('Browser could not read it — converting on the server, this can take a minute…');
