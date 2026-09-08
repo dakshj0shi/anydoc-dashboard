@@ -47,7 +47,7 @@
 <body>
 <div class="wrap">
   <h1>Document to Markdown</h1>
-  <p class="sub">Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV and text PDFs. Files are converted inside your browser and never leave your computer.</p>
+  <p class="sub">Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV and PDFs. Files convert inside your browser and stay on your computer. Scanned PDFs are the exception &mdash; the browser cannot read those, so they are sent to the office server for OCR.</p>
 
   <div id="drop" tabindex="0" role="button" aria-label="Choose files to convert">
     <strong>Drop files here</strong>
@@ -68,8 +68,10 @@
   <pre id="preview" class="hide"></pre>
 
   <footer>
-    Converted locally with <a href="https://github.com/firecrawl/anydoc">anydoc</a> (MIT), compiled to WebAssembly.
-    Scanned or image-only PDFs need OCR and will fail here &mdash; they contain no text to extract.
+    Converted in your browser with <a href="https://github.com/firecrawl/anydoc">anydoc</a> (MIT), compiled to WebAssembly.
+    Anything it cannot read falls back to <a href="https://github.com/docling-project/docling">Docling</a> (MIT) on the
+    office server, which runs OCR &mdash; slower, and that file does get uploaded to the LAN server.
+    Password-protected files are never uploaded; remove the password first.
   </footer>
 </div>
 
@@ -88,6 +90,10 @@ const REASON = {
   missingpart:   'A part the file needs to make sense is missing.',
 };
 const reasonFor = code => REASON[String(code ?? '').toLowerCase().replace(/[^a-z]/g, '')];
+
+// Docling on the office server: slow and heavy, but it OCRs scans. Same host as this page,
+// so one deploy covers both — and only files the browser already rejected are uploaded.
+const DOCLING = location.protocol + '//' + location.hostname + ':5001/v1/convert/file';
 
 // The worker owns the wasm module. Conversions are request/response keyed by id, so a
 // slow file never blocks the page and the results still land in the order they finished.
@@ -137,7 +143,10 @@ async function handle(files) {
   if (!files.length) return;
   status.textContent = 'Converting ' + files.length + ' file' + (files.length > 1 ? 's' : '') + '…';
   for (const file of files) {
-    results.push(await convert(file));
+    // Claim the row first so a slow server conversion shows progress instead of nothing.
+    const i = results.push({ name: file.name, note: 'Converting…' }) - 1;
+    render();
+    results[i] = await convert(file, note => { results[i] = { name: file.name, note }; render(); });
     render();
   }
   const bad = results.filter(r => r.error).length;
@@ -146,17 +155,46 @@ async function handle(files) {
     : 'Done.';
 }
 
-async function convert(file) {
+async function convert(file, onProgress) {
+  let local;
   try {
-    const r = await ask(file.name, new Uint8Array(await file.arrayBuffer()));
-    if (r.markdown === undefined) {
-      return { name: file.name, error: reasonFor(r.code) ?? (r.message || 'Conversion failed.') };
-    }
-    return { name: file.name, markdown: r.markdown, ms: r.ms };
+    local = await ask(file.name, new Uint8Array(await file.arrayBuffer()));
   } catch (e) {
     return { name: file.name, error: e.message || 'Could not read the file.' };
   }
+  if (local.markdown !== undefined) return { name: file.name, markdown: local.markdown, ms: local.ms };
+
+  const why = reasonFor(local.code) ?? local.message ?? 'Conversion failed.';
+  // A password stops Docling just as dead; anything else is worth the round trip.
+  if (String(local.code ?? '').toLowerCase().includes('encrypt')) return { name: file.name, error: why };
+
+  onProgress('Browser could not read it — running OCR on the server, this can take a minute…');
+  return docling(file, why);
 }
+
+async function docling(file, why) {
+  const body = new FormData();
+  // Hand over the File itself: the browser streams it from disk, and the worker has
+  // already consumed our in-memory copy of the bytes.
+  body.append('files', file);
+  body.append('to_formats', 'md');
+  const t = performance.now();
+  try {
+    const res = await fetch(DOCLING, { method: 'POST', body });
+    if (!res.ok) return { name: file.name, error: why + ' Server OCR failed too (HTTP ' + res.status + ').' };
+    const out = await res.json();
+    const markdown = out.document?.md_content;
+    if (!markdown) {
+      const detail = (out.errors ?? []).map(String).join('; ');
+      return { name: file.name, error: why + ' Server OCR found no text' + (detail ? ': ' + detail : '.') };
+    }
+    return { name: file.name, markdown, ms: Math.round(performance.now() - t), ocr: true };
+  } catch {
+    return { name: file.name, error: why + ' The server OCR service is not reachable.' };
+  }
+}
+
+const dur = ms => ms >= 1500 ? (ms / 1000).toFixed(1) + ' s' : ms + ' ms';
 
 function mdName(name) { return name.replace(/\.[^.]+$/, '') + '.md'; }
 
@@ -172,13 +210,14 @@ function render() {
     name.className = 'name';
     name.textContent = r.name;
     const note = document.createElement('div');
-    note.className = 'note' + (r.error ? '' : ' done');
-    note.textContent = r.error ?? (r.markdown.length.toLocaleString() + ' characters in ' + r.ms + ' ms');
+    note.className = 'note' + (r.markdown ? ' done' : '');
+    note.textContent = r.error ?? r.note ??
+      (r.markdown.length.toLocaleString() + ' characters in ' + dur(r.ms) + (r.ocr ? ' · server OCR' : ''));
     meta.append(name, note);
 
     const acts = document.createElement('div');
     acts.className = 'acts';
-    if (!r.error) {
+    if (r.markdown) {
       acts.append(
         btn('View', () => show(i)),
         btn('Copy', () => navigator.clipboard.writeText(r.markdown)),
@@ -215,7 +254,7 @@ function save(filename, text) {
 }
 
 $('copyall').onclick = () => {
-  const ok = results.filter(r => !r.error);
+  const ok = results.filter(r => r.markdown);
   if (!ok.length) return;
   const joined = ok.map(r => '# ' + r.name + '\n\n' + r.markdown).join('\n\n---\n\n');
   navigator.clipboard.writeText(joined);

@@ -3,8 +3,11 @@
 Internal web page that converts Word, PowerPoint, Excel, OpenDocument, RTF, EPUB,
 CSV and text-based PDFs to Markdown.
 
-Conversion runs in the user's browser via WebAssembly. **No document is ever uploaded** —
-the server only hands out static files. There is no backend, no database, and nothing to log.
+Conversion runs in the user's browser via WebAssembly, so **normal documents are never
+uploaded** — the server just hands out static files. The one exception is scanned PDFs: the
+browser cannot OCR those, so they fall through to Docling on port 5001 and that file does
+reach the server. Password-protected files are never uploaded, since Docling cannot open
+them either. Nothing is stored or logged in either path.
 
 ## What gets deployed
 
@@ -66,6 +69,56 @@ cd ~/anydoc-dashboard && git pull
 Users will keep the old `index.html` until they hard-refresh, but the 6.7 MB wasm is
 unchanged so that costs nothing. If you update the library itself, tell people to reload.
 
+## The OCR fallback: docling-serve on 5001
+
+`index.html` retries anything the browser rejected against
+[docling-serve](https://github.com/docling-project/docling-serve) — the official REST wrapper
+around Docling, so there is no backend of ours to maintain. The page builds the URL from its
+own hostname, so nothing is hardcoded:
+
+```js
+const DOCLING = location.protocol + '//' + location.hostname + ':5001/v1/convert/file';
+```
+
+**The page works without it.** If 5001 is not listening, browser conversions are unaffected
+and only scans fail, with a message saying the service is unreachable. Set it up second.
+
+Check the port is free, then install. Ubuntu 24.04 blocks system-wide pip (PEP 668), so use
+a venv — and install CPU-only torch **first**, or pip drags in gigabytes of CUDA libraries
+that this GPU-less box can never use:
+
+```bash
+ss -ltn | grep 5001 || echo "5001 free"
+```
+
+```bash
+python3 -m venv ~/docling-venv && ~/docling-venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu && ~/docling-venv/bin/pip install docling-serve
+```
+
+Pull the ~546 MB of model weights now rather than during someone's first upload:
+
+```bash
+~/docling-venv/bin/docling-tools models download
+```
+
+```bash
+pm2 start ~/docling-venv/bin/docling-serve --name docling --interpreter none -- run && pm2 save
+```
+
+`docling-serve run` already binds `0.0.0.0:5001`, and `DOCLING_SERVE_CORS_ORIGINS` defaults
+to `["*"]`, so the page on 3017 can call it with no extra config. That default is only safe
+because this is a LAN-only box — do not expose 5001 to the internet without setting
+`DOCLING_SERVE_CORS_ORIGINS` and `DOCLING_SERVE_API_KEY`.
+
+Verify:
+
+```bash
+echo '<h1>Hello</h1><p>it works</p>' > /tmp/t.html && curl -sf -F 'files=@/tmp/t.html' -F to_formats=md http://localhost:5001/v1/convert/file
+```
+
+Budget 4–6 GB RAM for it. That box already runs four PM2 Node apps, so check headroom
+before starting: `free -h`.
+
 ### Optional: nginx in front
 
 `pm2 serve` sends no `Cache-Control` and cannot serve the pre-compressed `.br`/`.gz`, so
@@ -114,10 +167,14 @@ appear, widen the `accept` attribute on the file input in `index.html`.
 
 ## Known limits
 
-- **Scanned / image-only PDFs fail.** They hold no text to extract; they need OCR, which
-  this build does not include. Users see "Not a supported format, or a scanned PDF that
-  needs OCR." Adding OCR means a real backend with PDFium and ONNX Runtime — see
-  `@firecrawl/pdf-inspector`'s `processPdfWithOcr`.
+- **Scanned PDFs are uploaded to the server.** The browser cannot OCR them, so they fall
+  through to Docling on `192.168.0.82:5001` — see below. The page says so up front, and the
+  file's row says "server OCR" once it comes back. If Docling is down the user gets the
+  original error plus "The server OCR service is not reachable."
+- **Docling is slow on this hardware.** No GPU on that box, so budget ~3 s per page. The
+  sync endpoint gives up after `DOCLING_SERVE_MAX_SYNC_WAIT` (120 s default), so roughly
+  40 pages is the ceiling per file. Longer documents need the async `/v1/convert/source`
+  API and polling, which is not wired up.
 - **Images become alt text.** Markdown output references image filenames; the raw bytes are
   not embedded. Fine for feeding an LLM, not a substitute for the original file.
 - **One file at a time.** The worker converts sequentially. A second worker would halve
