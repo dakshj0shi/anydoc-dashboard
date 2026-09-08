@@ -194,10 +194,13 @@ appear, widen the `accept` attribute on the file input in `index.html`.
   through to Docling on `192.168.0.82:5001`, which returns Markdown the same way anydoc does. The page says so up front, and the file's row says "converted on the server"
   once it comes back. If Docling is down the user gets the
   original error plus "The server converter is not reachable."
-- **Docling is slow on this hardware.** No GPU on that box, so budget ~3 s per page. The
-  sync endpoint gives up after `DOCLING_SERVE_MAX_SYNC_WAIT` (120 s default), so roughly
-  40 pages is the ceiling per file. Longer documents need the async `/v1/convert/source`
-  API and polling, which is not wired up.
+- **Docling is slow on this hardware, and big files are refused.** No GPU on that box, so
+  budget 3 s per page for plain scans and 5-15 s for image-heavy ones. The sync endpoint
+  gives up after `DOCLING_SERVE_MAX_SYNC_WAIT` and returns **504**, so `index.html` refuses
+  anything over **25 MB** client-side rather than tying up a shared production box for
+  fifteen minutes to fail anyway. Measured: a 94-page, 47 MB magazine cannot finish. This
+  tool is for scanned business documents of a few pages, not books. Lifting the ceiling
+  means the async `/v1/convert/file/async` API plus polling, which is not wired up.
 - **Images become alt text.** Markdown output references image filenames; the raw bytes are
   not embedded. Fine for feeding an LLM, not a substitute for the original file.
 - **One file at a time.** The worker converts sequentially. A second worker would halve

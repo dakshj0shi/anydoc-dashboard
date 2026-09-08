@@ -170,6 +170,15 @@ async function convert(file, onProgress) {
   // A password stops Docling just as dead; anything else is worth the round trip.
   if (String(local.code ?? '').toLowerCase().includes('encrypt')) return { name: file.name, error: why };
 
+  // Docling needs 5-15 s per page on this CPU-only box, so anything big blows the server's
+  // 120 s sync limit however long we wait. Size is a crude proxy for page count, but it is
+  // the only one we have without parsing the PDF — and refusing here beats spending fifteen
+  // minutes of a shared box's CPU to fail anyway.
+  if (file.size > 25 * 1024 * 1024) {
+    return { name: file.name, error: why + ' Too big to convert on the server: ' +
+      Math.round(file.size / 1048576) + ' MB, limit 25 MB.' };
+  }
+
   onProgress('Browser could not read it — converting on the server, this can take a minute…');
   return docling(file, why);
 }
