@@ -1,12 +1,13 @@
 # Document to Markdown
 
 Internal web page that converts Word, PowerPoint, Excel, OpenDocument, RTF, EPUB,
-CSV and text-based PDFs to Markdown.
+CSV and PDFs to Markdown, including scanned ones.
 
 Conversion runs in the user's browser via WebAssembly, so **normal documents are never
 uploaded** — the server just hands out static files. The one exception is scanned PDFs: the
-browser cannot OCR those, so they fall through to Docling on port 5001 and that file does
-reach the server. Password-protected files are never uploaded, since Docling cannot open
+browser cannot read those, so they fall through to Docling on port 5001 and that file does
+reach the server. Docling returns Markdown too — headings, GFM tables, lists — not a raw
+text dump. Password-protected files are never uploaded, since Docling cannot open
 them either. Nothing is stored or logged in either path.
 
 ## What gets deployed
@@ -69,9 +70,14 @@ cd ~/anydoc-dashboard && git pull
 Users will keep the old `index.html` until they hard-refresh, but the 6.7 MB wasm is
 unchanged so that costs nothing. If you update the library itself, tell people to reload.
 
-## The OCR fallback: docling-serve on 5001
+## The server fallback: docling-serve on 5001
 
-`index.html` retries anything the browser rejected against
+`index.html` asks Docling for `to_formats=md` and reads `document.md_content`, so both paths
+produce Markdown; the response's `text_content` field (plain text) is never read. It also
+pins `image_export_mode=placeholder`, because `embedded` would inline a base64 PNG of every
+scanned page into the output.
+
+It retries anything the browser rejected against
 [docling-serve](https://github.com/docling-project/docling-serve) — the official REST wrapper
 around Docling, so there is no backend of ours to maintain. The page builds the URL from its
 own hostname, so nothing is hardcoded:
@@ -167,10 +173,10 @@ appear, widen the `accept` attribute on the file input in `index.html`.
 
 ## Known limits
 
-- **Scanned PDFs are uploaded to the server.** The browser cannot OCR them, so they fall
-  through to Docling on `192.168.0.82:5001` — see below. The page says so up front, and the
-  file's row says "server OCR" once it comes back. If Docling is down the user gets the
-  original error plus "The server OCR service is not reachable."
+- **Scanned PDFs are uploaded to the server.** The browser cannot read them, so they fall
+  through to Docling on `192.168.0.82:5001`, which returns Markdown the same way anydoc does. The page says so up front, and the file's row says "converted on the server"
+  once it comes back. If Docling is down the user gets the
+  original error plus "The server converter is not reachable."
 - **Docling is slow on this hardware.** No GPU on that box, so budget ~3 s per page. The
   sync endpoint gives up after `DOCLING_SERVE_MAX_SYNC_WAIT` (120 s default), so roughly
   40 pages is the ceiling per file. Longer documents need the async `/v1/convert/source`

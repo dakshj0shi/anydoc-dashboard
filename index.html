@@ -47,7 +47,7 @@
 <body>
 <div class="wrap">
   <h1>Document to Markdown</h1>
-  <p class="sub">Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV and PDFs. Files convert inside your browser and stay on your computer. Scanned PDFs are the exception &mdash; the browser cannot read those, so they are sent to the office server for OCR.</p>
+  <p class="sub">Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV and PDFs. Files convert inside your browser and stay on your computer. Scanned PDFs are the exception &mdash; the browser cannot read those, so they are sent to the office server, which converts them to Markdown too.</p>
 
   <div id="drop" tabindex="0" role="button" aria-label="Choose files to convert">
     <strong>Drop files here</strong>
@@ -70,7 +70,8 @@
   <footer>
     Converted in your browser with <a href="https://github.com/firecrawl/anydoc">anydoc</a> (MIT), compiled to WebAssembly.
     Anything it cannot read falls back to <a href="https://github.com/docling-project/docling">Docling</a> (MIT) on the
-    office server, which runs OCR &mdash; slower, and that file does get uploaded to the LAN server.
+    office server, which reads the page images and returns Markdown &mdash; same headings and tables, just slower,
+    and that file does get uploaded to the LAN server.
     Password-protected files are never uploaded; remove the password first.
   </footer>
 </div>
@@ -91,8 +92,9 @@ const REASON = {
 };
 const reasonFor = code => REASON[String(code ?? '').toLowerCase().replace(/[^a-z]/g, '')];
 
-// Docling on the office server: slow and heavy, but it OCRs scans. Same host as this page,
-// so one deploy covers both — and only files the browser already rejected are uploaded.
+// Docling on the office server: slow and heavy, but it reads scans the browser can't,
+// and returns Markdown just like anydoc does. Same host as this page, so one deploy
+// covers both — and only files the browser already rejected are uploaded.
 const DOCLING = location.protocol + '//' + location.hostname + ':5001/v1/convert/file';
 
 // The worker owns the wasm module. Conversions are request/response keyed by id, so a
@@ -168,7 +170,7 @@ async function convert(file, onProgress) {
   // A password stops Docling just as dead; anything else is worth the round trip.
   if (String(local.code ?? '').toLowerCase().includes('encrypt')) return { name: file.name, error: why };
 
-  onProgress('Browser could not read it — running OCR on the server, this can take a minute…');
+  onProgress('Browser could not read it — converting on the server, this can take a minute…');
   return docling(file, why);
 }
 
@@ -178,19 +180,20 @@ async function docling(file, why) {
   // already consumed our in-memory copy of the bytes.
   body.append('files', file);
   body.append('to_formats', 'md');
+  body.append('image_export_mode', 'placeholder');
   const t = performance.now();
   try {
     const res = await fetch(DOCLING, { method: 'POST', body });
-    if (!res.ok) return { name: file.name, error: why + ' Server OCR failed too (HTTP ' + res.status + ').' };
+    if (!res.ok) return { name: file.name, error: why + ' Server conversion failed too (HTTP ' + res.status + ').' };
     const out = await res.json();
     const markdown = out.document?.md_content;
     if (!markdown) {
       const detail = (out.errors ?? []).map(String).join('; ');
-      return { name: file.name, error: why + ' Server OCR found no text' + (detail ? ': ' + detail : '.') };
+      return { name: file.name, error: why + ' The server could not extract anything from it' + (detail ? ': ' + detail : '.') };
     }
-    return { name: file.name, markdown, ms: Math.round(performance.now() - t), ocr: true };
+    return { name: file.name, markdown, ms: Math.round(performance.now() - t), remote: true };
   } catch {
-    return { name: file.name, error: why + ' The server OCR service is not reachable.' };
+    return { name: file.name, error: why + ' The server converter is not reachable.' };
   }
 }
 
@@ -212,7 +215,7 @@ function render() {
     const note = document.createElement('div');
     note.className = 'note' + (r.markdown ? ' done' : '');
     note.textContent = r.error ?? r.note ??
-      (r.markdown.length.toLocaleString() + ' characters in ' + dur(r.ms) + (r.ocr ? ' · server OCR' : ''));
+      (r.markdown.length.toLocaleString() + ' characters in ' + dur(r.ms) + (r.remote ? ' · converted on the server' : ''));
     meta.append(name, note);
 
     const acts = document.createElement('div');
