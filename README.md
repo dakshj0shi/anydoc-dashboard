@@ -125,6 +125,23 @@ echo '<h1>Hello</h1><p>it works</p>' > /tmp/t.html && curl -sf -F 'files=@/tmp/t
 Budget 4–6 GB RAM for it. That box already runs four PM2 Node apps, so check headroom
 before starting: `free -h`.
 
+### As actually deployed (verified 2026-09-08)
+
+The box has 14 Gi RAM (11 Gi free) and **4 cores**, hence `DOCLING_NUM_THREADS=2` — left at
+its default of 4 it saturates the machine mid-conversion and `holistic-dashboard` crawls.
+Docling runs as PM2 id 5, idles around 1.1 GB, and logs `Accelerator device: 'cpu'`.
+
+`ufw` is **inactive** on this box, so no firewall rule is needed. A LAN-scoped rule is
+stored for port 5001 if it is ever enabled — and if you do enable it, allow port 22 first
+or you lose SSH.
+
+`ss -ltn | grep 5001` prints nothing for the first ~5 s after a start: uvicorn binds the
+port only after the models finish loading. Not a failure, just wait.
+
+OCR runs through RapidOCR's **torch** engine, because `onnxruntime` is not installed —
+the logs say so at startup. It works. `~/docling-venv/bin/pip install onnxruntime` would
+likely speed up the OCR stage, but measure a real scan before bothering.
+
 ### Optional: nginx in front
 
 `pm2 serve` sends no `Cache-Control` and cannot serve the pre-compressed `.br`/`.gz`, so
