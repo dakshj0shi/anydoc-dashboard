@@ -96,7 +96,7 @@ const reasonFor = code => REASON[String(code ?? '').toLowerCase().replace(/[^a-z
 // and returns Markdown just like anydoc does. Same host as this page, so one deploy
 // covers both — and only files the browser already rejected are uploaded.
 const DOCLING = location.protocol + '//' + location.hostname + ':5001/v1/convert/file';
-const MAX_UPLOAD_MB = 10;
+const MAX_UPLOAD_MB = 50;
 
 // The worker owns the wasm module. Conversions are request/response keyed by id, so a
 // slow file never blocks the page and the results still land in the order they finished.
@@ -172,16 +172,21 @@ async function convert(file, onProgress) {
   if (String(local.code ?? '').toLowerCase().includes('encrypt')) return { name: file.name, error: why };
 
   // Size is the only cheap proxy we have for how long Docling will take, and on this
-  // CPU-only box that is 5-15 s per scanned page. 10 MB is roughly 15-25 pages, whose worst
-  // case still lands inside the server's DOCLING_SERVE_MAX_SYNC_WAIT (set to 600 s). Those
-  // two numbers are coupled: raising this without raising that env var only trades a fast,
-  // clear refusal for a slow 504.
+  // CPU-only box a 264 DPI scanned page costs 10-30 s. 50 MB is ~95 such pages, so a file
+  // at this ceiling can occupy the server for the better part of an hour. This number is
+  // coupled to DOCLING_SERVE_MAX_SYNC_WAIT, which must exceed the slowest file allowed here
+  // (3600 s) or the wait ends in a 504 instead of a document.
   if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
     return { name: file.name, error: why + ' Too big to convert on the server: ' +
       Math.round(file.size / 1048576) + ' MB, limit ' + MAX_UPLOAD_MB + ' MB.' };
   }
 
-  onProgress('Browser could not read it — converting on the server, this can take a minute…');
+  // At 50 MB the honest estimate is tens of minutes, and the request dies with the tab.
+  // Saying "a minute" here would just get people to close it half way through.
+  const mb = file.size / 1048576;
+  onProgress(mb > 10
+    ? 'Browser could not read it — converting on the server. A file this size can take 15-45 minutes; leave this tab open.'
+    : 'Browser could not read it — converting on the server, this can take a minute…');
   return docling(file, why);
 }
 
